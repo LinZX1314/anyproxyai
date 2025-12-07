@@ -9,7 +9,9 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/energye/systray"
 	log "github.com/sirupsen/logrus"
@@ -19,24 +21,50 @@ import (
 //go:embed icon.ico
 var trayIconData []byte
 
+var (
+	user32           = syscall.NewLazyDLL("user32.dll")
+	procPeekMessageW = user32.NewProc("PeekMessageW")
+)
+
+const (
+	PM_NOREMOVE = 0x0000
+)
+
+type MSG struct {
+	HWnd    uintptr
+	Message uint32
+	WParam  uintptr
+	LParam  uintptr
+	Time    uint32
+	Pt      struct{ X, Y int32 }
+}
+
+// pumpMessages 手动泵送 Windows 消息，保持托盘响应
+func pumpMessages() {
+	var msg MSG
+	// PeekMessage 不会阻塞，只是检查消息队列
+	procPeekMessageW.Call(uintptr(unsafe.Pointer(&msg)), 0, 0, 0, PM_NOREMOVE)
+}
+
 // SystemTray 系统托盘管理器
 type SystemTray struct {
 	ctx          context.Context
 	mShow        *systray.MenuItem
 	mQuit        *systray.MenuItem
 	isRunning    int32 // 使用 atomic
+	isReady      int32 // 托盘是否已就绪
 	mu           sync.RWMutex
 	quitCallback func()
 	stopCh       chan struct{}
-	showCh       chan struct{} // 用于触发显示窗口
+	actionCh     chan func() // 用于在托盘线程执行操作
 }
 
 // NewSystemTray 创建系统托盘管理器
 func NewSystemTray(ctx context.Context) *SystemTray {
 	return &SystemTray{
-		ctx:    ctx,
-		stopCh: make(chan struct{}),
-		showCh: make(chan struct{}, 1),
+		ctx:      ctx,
+		stopCh:   make(chan struct{}),
+		actionCh: make(chan func(), 10),
 	}
 }
 
@@ -62,7 +90,7 @@ func (s *SystemTray) ShowWindow() {
 
 		// 将窗口置于前台
 		runtime.WindowSetAlwaysOnTop(s.ctx, true)
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 		runtime.WindowSetAlwaysOnTop(s.ctx, false)
 	}()
 }
@@ -150,6 +178,11 @@ func (s *SystemTray) onReady() {
 		s.ShowWindow()
 	})
 
+	// 设置右键点击显示菜单 - 确保右键菜单能正常弹出
+	systray.SetOnRClick(func(menu systray.IMenu) {
+		menu.ShowMenu()
+	})
+
 	// 添加菜单项 (使用英文以确保兼容性)
 	s.mShow = systray.AddMenuItem("Open", "Open main window")
 	s.mShow.Click(func() {
@@ -164,14 +197,45 @@ func (s *SystemTray) onReady() {
 		s.QuitApp()
 	})
 
+	// 标记托盘已就绪
+	atomic.StoreInt32(&s.isReady, 1)
+
+	// 启动消息泵保持托盘活跃
+	go s.messagePump()
+
 	// 定期刷新保持托盘活跃
 	go s.keepAlive()
+}
+
+// messagePump 消息泵 - 定期泵送 Windows 消息保持托盘响应
+func (s *SystemTray) messagePump() {
+	// 使用较短间隔泵送消息
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.stopCh:
+			return
+		case <-ticker.C:
+			if atomic.LoadInt32(&s.isRunning) == 0 {
+				return
+			}
+			// 泵送消息保持响应
+			pumpMessages()
+		case action := <-s.actionCh:
+			// 执行排队的操作
+			if action != nil {
+				action()
+			}
+		}
+	}
 }
 
 // keepAlive 保持托盘活跃 - 修复 Windows 托盘无响应问题
 func (s *SystemTray) keepAlive() {
 	// 使用更短的间隔来保持托盘响应
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
 	refreshCount := 0
@@ -188,25 +252,24 @@ func (s *SystemTray) keepAlive() {
 			refreshCount++
 
 			// 每次都刷新 tooltip 以保持消息泵活跃
-			systray.SetTooltip("AnyProxyAi - API Proxy Manager")
+			if atomic.LoadInt32(&s.isReady) == 1 {
+				systray.SetTooltip("AnyProxyAi - API Proxy Manager")
+			}
 
-			// 每 30 秒刷新一次图标
-			if refreshCount%6 == 0 && len(trayIconData) > 0 {
-				systray.SetIcon(trayIconData)
+			// 每 20 秒刷新一次图标
+			if refreshCount%10 == 0 && len(trayIconData) > 0 {
+				if atomic.LoadInt32(&s.isReady) == 1 {
+					systray.SetIcon(trayIconData)
+				}
 			}
 		}
 	}
 }
 
-// handleStopChannel 监听停止信号
-func (s *SystemTray) handleStopChannel() {
-	<-s.stopCh
-	// 停止信号收到，退出
-}
-
 // onExit 托盘退出回调
 func (s *SystemTray) onExit() {
 	atomic.StoreInt32(&s.isRunning, 0)
+	atomic.StoreInt32(&s.isReady, 0)
 	log.Info("System tray exited")
 }
 

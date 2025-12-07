@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -55,6 +56,26 @@ func setupFileLogging() (*os.File, error) {
 	return file, nil
 }
 
+// checkPortAvailable 检查端口是否可用
+func checkPortAvailable(host string, port int) error {
+	addr := fmt.Sprintf("%s:%d", host, port)
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("port %d is already in use: %v", port, err)
+	}
+	listener.Close()
+	return nil
+}
+
+// showPortInUseError 显示端口占用错误对话框
+func showPortInUseError(port int) {
+	// Windows 下使用 MessageBox 显示错误
+	system.ShowErrorDialog(
+		"Port Already In Use",
+		fmt.Sprintf("API port %d is already in use.\n\nPlease check if another instance is running or change the port in config.json.", port),
+	)
+}
+
 func main() {
 	// 初始化日志
 	log.SetFormatter(&log.TextFormatter{
@@ -76,6 +97,14 @@ func main() {
 			defer logFile.Close()
 		}
 	}
+
+	// 检查端口是否被占用
+	if err := checkPortAvailable(cfg.Host, cfg.Port); err != nil {
+		log.Errorf("Port check failed: %v", err)
+		showPortInUseError(cfg.Port)
+		os.Exit(1)
+	}
+	log.Infof("Port %d is available", cfg.Port)
 
 	// 初始化数据库
 	db, err := database.InitDB(cfg.DatabasePath)
