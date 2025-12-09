@@ -26,8 +26,6 @@ jobs:
       release_body: ${{ steps.check.outputs.release_body }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       
       - name: Check commit message for build triggers
         id: check
@@ -63,10 +61,14 @@ jobs:
           echo "release_tag=$RELEASE_TAG" >> $GITHUB_OUTPUT
           echo "release_body=$RELEASE_BODY" >> $GITHUB_OUTPUT
 
+  # Windows builds (amd64 and arm64)
   build-windows:
     needs: check-build
     if: needs.check-build.outputs.should_build == 'true'
     runs-on: windows-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
     steps:
       - uses: actions/checkout@v4
       
@@ -84,9 +86,6 @@ jobs:
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
       
-      - name: Install Wails v3
-        run: go install github.com/wailsapp/wails/v3/cmd/wails3@latest
-      
       - name: Install frontend dependencies
         run: |
           cd frontend
@@ -102,22 +101,27 @@ jobs:
       
       - name: Generate Windows resources (icon + manifest)
         run: |
-          rsrc -ico build\windows\icon.ico -manifest build\windows\anyproxyai.exe.manifest -o rsrc_windows_amd64.syso
+          rsrc -ico build\windows\icon.ico -manifest build\windows\anyproxyai.exe.manifest -o rsrc_windows_${{ matrix.arch }}.syso
       
-      - name: Build Windows amd64
+      - name: Build Windows ${{ matrix.arch }}
+        env:
+          GOOS: windows
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: 0
         run: |
-          go build -ldflags "-s -w -H windowsgui" -o build\bin\anyproxyai-windows-amd64.exe .
+          go build -ldflags "-s -w -H windowsgui" -o build\bin\anyproxyai-windows-${{ matrix.arch }}.exe .
       
       - name: Clean up syso
         run: |
-          if (Test-Path "rsrc_windows_amd64.syso") { Remove-Item "rsrc_windows_amd64.syso" }
+          if (Test-Path "rsrc_windows_${{ matrix.arch }}.syso") { Remove-Item "rsrc_windows_${{ matrix.arch }}.syso" }
       
-      - name: Upload Windows amd64 artifact
+      - name: Upload Windows ${{ matrix.arch }} artifact
         uses: actions/upload-artifact@v4
         with:
-          name: anyproxyai-windows-amd64
-          path: build/bin/anyproxyai-windows-amd64.exe
+          name: anyproxyai-windows-${{ matrix.arch }}
+          path: build/bin/anyproxyai-windows-${{ matrix.arch }}.exe
 
+  # macOS builds (arm64 and amd64)
   build-macos:
     needs: check-build
     if: needs.check-build.outputs.should_build == 'true'
@@ -142,9 +146,6 @@ jobs:
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
       
-      - name: Install Wails v3
-        run: go install github.com/wailsapp/wails/v3/cmd/wails3@latest
-      
       - name: Install frontend dependencies
         run: cd frontend && npm install
       
@@ -165,7 +166,6 @@ jobs:
           cp build/bin/anyproxyai-darwin-${{ matrix.arch }} build/bin/AnyProxyAi.app/Contents/MacOS/AnyProxyAi
           chmod +x build/bin/AnyProxyAi.app/Contents/MacOS/AnyProxyAi
           
-          # Create Info.plist
           cat > build/bin/AnyProxyAi.app/Contents/Info.plist << 'EOF'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -204,7 +204,8 @@ jobs:
           name: anyproxyai-darwin-${{ matrix.arch }}
           path: build/bin/anyproxyai-darwin-${{ matrix.arch }}.zip
 
-  build-linux:
+  # Linux amd64 build
+  build-linux-amd64:
     needs: check-build
     if: needs.check-build.outputs.should_build == 'true'
     runs-on: ubuntu-22.04
@@ -230,9 +231,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
       
-      - name: Install Wails v3
-        run: go install github.com/wailsapp/wails/v3/cmd/wails3@latest
-      
       - name: Install frontend dependencies
         run: cd frontend && npm install
       
@@ -252,8 +250,56 @@ jobs:
           name: anyproxyai-linux-amd64
           path: build/bin/anyproxyai-linux-amd64
 
+  # Linux arm64 build
+  build-linux-arm64:
+    needs: check-build
+    if: needs.check-build.outputs.should_build == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+          cache-dependency-path: go.sum
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+      
+      - name: Install cross-compilation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+      
+      - name: Install frontend dependencies
+        run: cd frontend && npm install
+      
+      - name: Build frontend
+        run: cd frontend && npm run build
+      
+      - name: Build Linux arm64
+        run: |
+          export CGO_ENABLED=0
+          export GOOS=linux
+          export GOARCH=arm64
+          go build -ldflags "-s -w" -o build/bin/anyproxyai-linux-arm64 .
+      
+      - name: Upload Linux arm64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: anyproxyai-linux-arm64
+          path: build/bin/anyproxyai-linux-arm64
+
+  # Release job
   release:
-    needs: [check-build, build-windows, build-macos, build-linux]
+    needs: [check-build, build-windows, build-macos, build-linux-amd64, build-linux-arm64]
     runs-on: ubuntu-latest
     if: needs.check-build.outputs.should_release == 'true'
     steps:
@@ -269,11 +315,17 @@ jobs:
       
       - name: Create and push tag (if from commit message)
         if: ${{ !startsWith(github.ref, 'refs/tags/') && needs.check-build.outputs.release_tag != '' }}
+        continue-on-error: true
         run: |
           git config user.name github-actions
           git config user.email github-actions@github.com
-          git tag ${{ needs.check-build.outputs.release_tag }}
-          git push origin ${{ needs.check-build.outputs.release_tag }}
+          # Check if tag exists
+          if git rev-parse "${{ needs.check-build.outputs.release_tag }}" >/dev/null 2>&1; then
+            echo "Tag ${{ needs.check-build.outputs.release_tag }} already exists, skipping creation"
+          else
+            git tag ${{ needs.check-build.outputs.release_tag }}
+            git push origin ${{ needs.check-build.outputs.release_tag }}
+          fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
@@ -282,11 +334,25 @@ jobs:
         with:
           tag_name: ${{ needs.check-build.outputs.release_tag || github.ref_name }}
           name: ${{ needs.check-build.outputs.release_tag || github.ref_name }}
-          body: ${{ needs.check-build.outputs.release_body || format('Release {0}', github.ref_name) }}
+          body: |
+            ## ${{ needs.check-build.outputs.release_body || format('Release {0}', github.ref_name) }}
+            
+            ### 下载 / Downloads
+            
+            | 平台 Platform | 架构 Arch | 文件 File |
+            |--------------|----------|-----------|
+            | Windows | amd64 | anyproxyai-windows-amd64.exe |
+            | Windows | arm64 | anyproxyai-windows-arm64.exe |
+            | macOS | arm64 (Apple Silicon) | anyproxyai-darwin-arm64.zip |
+            | macOS | amd64 (Intel) | anyproxyai-darwin-amd64.zip |
+            | Linux | amd64 | anyproxyai-linux-amd64 |
+            | Linux | arm64 | anyproxyai-linux-arm64 |
           files: |
             artifacts/anyproxyai-windows-amd64/*
+            artifacts/anyproxyai-windows-arm64/*
             artifacts/anyproxyai-darwin-arm64/*
             artifacts/anyproxyai-darwin-amd64/*
             artifacts/anyproxyai-linux-amd64/*
+            artifacts/anyproxyai-linux-arm64/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
