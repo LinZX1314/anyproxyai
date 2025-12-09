@@ -5,7 +5,10 @@
 *.so
 *.dylib
 build/bin/
-build/
+# Keep build config files but ignore generated files
+!build/
+!build/windows/
+!build/config.yml
 
 # Test binary
 *.test
