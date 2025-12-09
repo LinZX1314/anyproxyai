@@ -20,6 +20,7 @@ type Config struct {
 	MinimizeToTray      bool   `json:"minimize_to_tray"`
 	AutoStart           bool   `json:"auto_start"`
 	EnableFileLog       bool   `json:"enable_file_log"`
+	Language            string `json:"language"`
 	configPath          string
 }
 
@@ -38,6 +39,7 @@ func LoadConfig() *Config {
 		MinimizeToTray:      true,
 		AutoStart:           false,
 		EnableFileLog:       false,
+		Language:            "en-US",
 		configPath:          configPath,
 	}
 

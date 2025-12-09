@@ -497,7 +497,7 @@
 
                   <n-space align="center">
                     <n-icon size="20"><InformationCircleIcon /></n-icon>
-                    <n-text>{{ t('settings.version') }}: v1.0.4</n-text>
+                    <n-text>{{ t('settings.version') }}: v2.0.1</n-text>
                   </n-space>
 
                   <n-space align="center">
@@ -1008,7 +1008,16 @@ const todayChartOption = computed(() => {
       formatter: function(params) {
         let result = params[0].axisValue + '<br/>'
         params.forEach(param => {
-          result += param.marker + param.seriesName + ': ' + param.value + '<br/>'
+          // 对 Token 数量进行格式化
+          let value = param.value
+          if (param.seriesIndex === 0) { // Token 系列
+            if (value >= 1000000) {
+              value = (value / 1000000).toFixed(1) + 'M'
+            } else if (value >= 1000) {
+              value = (value / 1000).toFixed(1) + 'K'
+            }
+          }
+          result += param.marker + param.seriesName + ': ' + value + '<br/>'
         })
         return result
       }
@@ -1034,7 +1043,17 @@ const todayChartOption = computed(() => {
       {
         type: 'value',
         name: 'Tokens',
-        position: 'left'
+        position: 'left',
+        axisLabel: {
+          formatter: function(value) {
+            if (value >= 1000000) {
+              return (value / 1000000).toFixed(1) + 'M'
+            } else if (value >= 1000) {
+              return (value / 1000).toFixed(1) + 'K'
+            }
+            return value
+          }
+        }
       },
       {
         type: 'value',
@@ -1771,15 +1790,17 @@ watch(groupedRoutes, (newGroups) => {
   gap: 4px;
   margin-bottom: 12px;
   width: 100%;
-  justify-content: space-between;
+  justify-content: flex-start;
+  overflow-x: auto;
 }
 
 .heatmap-week {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  flex: 1;
-  max-width: calc(100% / 53 - 4px);
+  flex: 0 0 auto;
+  width: calc((100% - 52 * 4px) / 53);
+  min-width: 12px;
 }
 
 .heatmap-cell {

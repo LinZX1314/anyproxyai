@@ -3,6 +3,9 @@ import naive, { darkTheme } from 'naive-ui'
 import App from './App.vue'
 import i18n from './i18n'
 
+// Initialize Wails v3 compatibility shim
+import './wails-shim.js'
+
 const app = createApp(App)
 
 app.use(naive)
